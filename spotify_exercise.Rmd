@@ -1,0 +1,1609 @@
+---
+title: "spotify_exercise"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = "hide")
+library(reticulate)
+use_python("/Users/dbendet/anaconda3/anaconda3/bin/python")
+```
+
+
+```{python}
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from pandas.plotting import parallel_coordinates
+```
+
+```{python}
+data = pd.read_csv('./data/playlist_revision_v01.txt', sep='\t')
+data.head()
+```
+
+```{python}
+data.describe()
+# data.dtypes
+# data['playlist_uri'].nunique()
+# data['owner'].nunique()
+# not data['playlist_uri'].is_unique
+# data['owner'].duplicated().any()
+# data['genre_1'].nunique()
+# data['mood_1'].nunique()
+# data.isnull().values.any()
+# data.isna().values.any()
+
+# data['n_albums'].mean()
+```
+
+
+
+```{python}
+# double checking streams per playlist
+data['streams'].sum() / data['playlist_uri'].count()
+
+# what percent of streams are over 30s
+data['stream30s'].sum() / data['streams'].sum()
+```
+
+
+```{python}
+# adding a bunch of features we may use 
+
+data['pct_wau_dau'] = data['dau'] / data['wau']
+data['pct_mau_wau'] = data['wau'] / data['mau']
+data['pct_mau_dau'] = data['dau'] / data['mau']
+data['pct_users_mau'] = data['mau'] / data['users']
+data['pct_streams_for_30'] = data['stream30s'] / data['streams']
+data['monthly_mao_growth'] = data['mau'] / data['mau_previous_month'] - 1
+data['pct_previous_month_both'] = data['mau_both_months'] / data['mau_previous_month']
+data['pct_skippers_of_users'] = data['skippers'] / data['users']
+data['streams_per_track'] = data['streams'] / data['n_tracks']
+data['streams_30_per_track'] = data['stream30s'] / data['n_tracks']
+data['streams_per_artist'] = data['streams'] / data['n_artists']
+data['streams_30_per_artist'] = data['stream30s'] / data['n_artists']
+data['tracks_per_artist'] = data['n_tracks'] / data['n_artists']
+data['streams_per_album'] = data['streams'] / data['n_albums']
+data['streams_30_per_album'] = data['stream30s'] / data['n_albums']
+data['albums_per_artist'] = data['n_albums'] / data['n_artists']
+data['albums_per_track'] = data['n_albums'] / data['n_tracks']
+data['monthly_streams30_per_mau'] = data['monthly_stream30s'] / data['mau']
+data['monthly_streams30_per_user'] = data['monthly_stream30s'] / data['users']
+data['monthly_streams30_per_track'] = data['monthly_stream30s'] / data['n_tracks']
+data['monthly_streams30_per_artist'] = data['monthly_stream30s'] / data['n_artists']
+data['monthly_streams30_per_album'] = data['monthly_stream30s'] / data['n_albums']
+data['monthly_corrected_streams30s'] = data['monthly_stream30s'] - data['monthly_owner_stream30s']
+data['monthly_corrected_streams30_per_mau'] = data['monthly_corrected_streams30s'] / data['mau']
+data['monthly_corrected_streams30_per_user'] = data['monthly_corrected_streams30s'] / data['users']
+data['monthly_corrected_streams30_per_track'] = data['monthly_corrected_streams30s'] / data['n_tracks']
+data['monthly_corrected_streams30_per_artist'] = data['monthly_corrected_streams30s'] / data['n_artists']
+data['monthly_corrected_streams30_per_album'] = data['monthly_corrected_streams30s'] / data['n_albums']
+
+def clean_alt_list(list_):
+    list_ = list_.replace(', ', '","')
+    list_ = list_.replace('[', '["')
+    list_ = list_.replace(']', '"]')
+    return list_
+    
+data['first_word'] = data['tokens'].apply(clean_alt_list).apply(lambda x: eval(x)[0])
+
+```
+
+```{python}
+# the same owner has the top 14 playlists and many more of the top ones 
+# and 2 playlists are insane outliers 
+
+data.sort_values(by = 'monthly_corrected_streams30s', ascending=False).head(25)
+```
+
+```{python}
+# so one owner has 399 playlists 
+pd.DataFrame(data.groupby('owner')['playlist_uri'].nunique().sort_values(ascending = False)).head(10)
+```
+
+```{python}
+owner_grouping = data.groupby(['owner']).agg({'playlist_uri': ['nunique'], 
+                                                'monthly_corrected_streams30s': ['sum', 'mean', 'max'],
+                                                'monthly_streams30_per_mau': ['sum'],
+                                                'monthly_streams30_per_user': ['sum'],
+                                                'streams': ['sum'],
+                                                'stream30s': ['sum'],
+                                                'mau_both_months': ['sum'],
+                                                'mau_previous_month': ['sum'],
+                                                'mau': ['sum'],
+                                                'users': ['sum'],
+                                                'skippers': ['sum'],
+                                               })
+
+owner_grouping.columns = ['playlists', 
+                            'monthly_corrected_streams30s_sum', 
+                            'monthly_corrected_streams30s_mean', 
+                            'monthly_corrected_streams30s_max',
+                            'monthly_streams30_per_mau',
+                            'monthly_streams30_per_user',
+                            'streams',
+                            'streams30',
+                            'mau_both_months',
+                            'mau_previous_month',
+                            'mau',
+                            'users',
+                            'skippers']                           
+
+owner_grouping = owner_grouping.reset_index().sort_values(by='playlists', ascending = False)
+
+owner_grouping['pct_streams_for_30'] = owner_grouping['streams30'] / owner_grouping['streams']
+owner_grouping['pct_previous_month_both'] = owner_grouping['mau_both_months'] / owner_grouping['mau_previous_month']
+owner_grouping['monthly_mao_growth'] = owner_grouping['mau'] / owner_grouping['mau_previous_month'] - 1
+owner_grouping['pct_skippers_of_users'] = owner_grouping['skippers'] / owner_grouping['users']
+
+owner_grouping.head(10)
+
+# be careful bc not all of these make sense to sum and aggregate across owners (bc of multiple playlists)
+```
+
+```{python}
+joined_df = data.merge(owner_grouping, on='owner', how='left')
+joined_df.head()
+```
+
+```{python}
+# the top 10 playlists have 31% of the monthly streams over 30s
+
+joined_df['rank'] = joined_df['monthly_corrected_streams30s'].rank(ascending=False, method='first')
+# joined_df.sort_values('rank', ascending=True).head()
+
+joined_df[joined_df['rank'] < 11]['monthly_corrected_streams30s'].sum() / joined_df['monthly_corrected_streams30s'].sum()
+```
+```{python echo = FALSE}
+# the top 100 have 70% of streams 
+
+joined_df[joined_df['rank'] < 101]['monthly_corrected_streams30s'].sum() / joined_df['monthly_corrected_streams30s'].sum()
+```
+
+
+```{python}
+# 33% of playlists have less than 10 monthly streams for over 30s
+
+joined_df[joined_df['monthly_corrected_streams30s'] > 10]['playlist_uri'].nunique() / joined_df['playlist_uri'].nunique()
+```
+```{python}
+# only 9% of playlists have over 10 monthly active users for over 30s
+
+joined_df[joined_df['mau_x'] > 10]['playlist_uri'].nunique() / joined_df['playlist_uri'].nunique()
+```
+
+```{python}
+# only 18% of playlists have over 10 users
+
+joined_df[joined_df['users_x'] > 10]['playlist_uri'].nunique() / joined_df['playlist_uri'].nunique()
+```
+
+
+```{python}
+# outliers 
+from scipy import stats
+# data[(np.abs(stats.zscore(data)) < 3).all(axis=1)]
+
+# US playlists only 
+
+joined_df['owner_country'].unique()
+```
+
+```{python}
+def group_and_aggregate(grouping_col = 'mood_1'): 
+
+    grouping_col = grouping_col
+    
+    grouped = joined_df.groupby([grouping_col]).agg({'playlist_uri': ['nunique'], 
+                                                    'monthly_corrected_streams30s': ['sum', 'mean', 'max'],
+                                                    'monthly_streams30_per_mau_x': ['sum'],
+                                                    'monthly_streams30_per_user_x': ['sum'],
+                                                    'streams_x': ['sum'],
+                                                    'stream30s': ['sum'],
+                                                    'mau_both_months_x': ['sum'],
+                                                    'mau_previous_month_x': ['sum'],
+                                                    'mau_x': ['sum'],
+                                                    'users_x': ['sum'],
+                                                    'skippers_x': ['sum'],
+                                                   })
+
+    grouped.columns = ['playlists', 
+                                'monthly_corrected_streams30s_sum', 
+                                'monthly_corrected_streams30s_mean', 
+                                'monthly_corrected_streams30s_max',
+                                'monthly_streams30_per_mau',
+                                'monthly_streams30_per_user',
+                                'streams',
+                                'streams30',
+                                'mau_both_months',
+                                'mau_previous_month',
+                                'mau',
+                                'users',
+                                'skippers']                           
+
+    grouped = grouped.reset_index().sort_values(by='playlists', ascending = False)
+
+    grouped['pct_streams_for_30'] = grouped['streams30'] / grouped['streams']
+    grouped['pct_previous_month_both'] = grouped['mau_both_months'] / grouped['mau_previous_month']
+    grouped['monthly_mao_growth'] = grouped['mau'] / grouped['mau_previous_month'] - 1
+    grouped['pct_skippers_of_users'] = grouped['skippers'] / grouped['users']
+    
+    return(grouped)
+
+# mood_grouped.head(30)
+```
+
+```{python}
+genre_grouped = group_and_aggregate('genre_1')
+genre_grouped['users_per_playlist'] = genre_grouped['users'] / genre_grouped['playlists']
+genre_grouped.sort_values(by = 'users_per_playlist', ascending = False).head()
+# genre_grouped.head()
+```
+```{python}
+mood_grouped = group_and_aggregate('mood_1')
+mood_grouped['users_per_playlist'] = mood_grouped['users'] / mood_grouped['playlists']
+mood_grouped.sort_values(by = 'users_per_playlist', ascending = False).head()
+# mood_grouped.head()
+```
+```{python}
+artist_grouped = group_and_aggregate('n_artists')
+artist_grouped.head()
+```
+```{python}
+album_grouped = group_and_aggregate('n_albums')
+album_grouped.head()
+```
+
+```{python}
+track_grouped = group_and_aggregate('n_tracks')
+track_grouped.head(25)
+```
+
+```{python}
+track_grouped = group_and_aggregate('n_tracks')
+track_grouped.head(25)
+```
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(broom)
+library(RColorBrewer)
+library(tidyr)
+library(scales) 
+library(tidyverse)
+options(scipen = 100)
+
+```
+
+
+```{r echo = FALSE}
+
+joined_df = py$joined_df
+
+
+# fixing genres and moods
+
+# View(joined_df %>% group_by(genre_1) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+
+joined_df = joined_df %>% 
+        mutate(genre_1 = replace(genre_1, genre_1 == "-", "Unknown"))
+
+# View(joined_df %>% group_by(genre_1) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+
+
+
+# View(joined_df %>% group_by(mood_1) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+
+joined_df = joined_df %>% 
+        mutate(mood_1 = replace(mood_1, mood_1 == "-", "Unknown"))
+
+# View(joined_df %>% group_by(mood_1) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+```
+
+```{r echo = FALSE}
+
+# top 2 outlier playlists
+# spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:a39746f620483e44552dd72cb67fc740
+# spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:2b64360f221867fd22e21d8b9375472b
+
+joined_df = joined_df %>% mutate(top_two_playlist = ifelse(playlist_uri == 'spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:a39746f620483e44552dd72cb67fc740' |
+                                           playlist_uri == 'spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:2b64360f221867fd22e21d8b9375472b',
+                                           "yes", 
+                                           "no"))
+
+# View(joined_df %>% select(playlist_uri, owner, streams_x, top_two_playlist) %>% arrange(desc(streams_x)))
+
+```
+
+
+
+```{r echo = FALSE}
+
+# spotify owned playlists 
+
+joined_df %>% group_by(owner) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists))
+
+# owner = 552c5ee1c8df46c75b6d473d68370189
+
+joined_df = joined_df %>% mutate(spotify_owned = ifelse(owner == '552c5ee1c8df46c75b6d473d68370189',
+                                           "yes", 
+                                           "no"))
+
+# View(joined_df %>% select(playlist_uri, owner, streams_x, top_two_playlist, spotify_owned) %>% arrange(desc(streams_x)))
+
+```
+
+
+
+
+
+
+
+```{r echo = FALSE}
+
+bar_graph <- function(df,
+                      x,
+                      y,
+                      fill = "black", 
+                      x_name = "Genre", 
+                      y_name = "Streams Yesterday", 
+                      title = "Streams by Genre (Yesterday)",
+                      fill_colors = c("#6ae368")) { 
+  p <- ggplot(data = df, aes(reorder({{x}}, {{y}}), {{y}}), fill = fill) +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  scale_y_continuous(y_name, expand = c(0,0)) +
+  scale_x_discrete(x_name) +
+  ggtitle(title) +
+  scale_fill_manual(values=fill_colors) +
+  theme_bw() +
+  theme(
+    #        axis.title.y = element_text(size = rel(0)),
+    axis.title.x = element_text(vjust=-.05),
+    axis.line = element_line(colour = "#666666", size = .2),
+    axis.text=(element_text(size=8)),
+    plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+    panel.border = element_rect(colour = "white"),
+    legend.position='none',
+    legend.title=element_blank(),
+    legend.key = element_rect(colour = "white"))
+  p
+}
+
+```
+
+
+```{r echo = FALSE}
+joined_df$genre_1 <- as.factor(joined_df$genre_1)
+joined_df$streams_x <- as.numeric(joined_df$streams_x)
+
+graph_df = joined_df %>% 
+  filter(mau_previous_month_x > 10) %>% 
+  group_by(genre_1) %>% 
+  summarise(count = n(), 
+            streams_yesterday = sum(streams_x)
+            ) 
+# %>%
+
+bar_graph(df = graph_df,
+          x = genre_1, 
+          y = streams_yesterday, 
+          fill = "black", 
+          x_name = "Genre", 
+          y_name = "Streams Yesterday", 
+          title = "Streams by Genre (Yesterday)",
+          fill_colors = 'c("#6ae368")')
+```
+
+```{r echo = FALSE}
+joined_df = py$joined_df
+
+joined_df$mood_1 <- as.factor(joined_df$mood_1)
+joined_df$streams_x <- as.numeric(joined_df$streams_x)
+
+graph_df = joined_df %>% 
+  filter(mau_previous_month_x > 10) %>% 
+  group_by(mood_1) %>% 
+  summarise(count = n(), 
+            streams_yesterday = sum(streams_x)
+            ) 
+# %>%
+
+bar_graph(df = graph_df,
+          x = mood_1, 
+          y = streams_yesterday, 
+          fill = "black", 
+          x_name = "Mood", 
+          y_name = "Streams Yesterday", 
+          title = "Streams by Mood (Yesterday)",
+          fill_colors = 'c("#6ae368")')
+```
+
+
+
+```{r echo = FALSE}
+# correlation between good streams and good user is 97% 
+
+cor(joined_df %>% select(monthly_corrected_streams30s), joined_df %>% select(mau_x))
+
+```
+
+
+```{r echo = FALSE}
+# scattplot betwen the 2 
+
+  p <- ggplot(data = joined_df, aes(mau_x, monthly_corrected_streams30s)) +
+  geom_point() +
+  geom_smooth() +
+  # scale_y_continuous(y_name, expand = c(0,0)) +
+  # scale_x_discrete(x_name) +
+  ggtitle("30s Streams vs MAUs per Playlist") +
+  # scale_fill_manual(values=fill_colors) +
+  theme_bw() +
+  theme(
+    #        axis.title.y = element_text(size = rel(0)),
+    axis.title.x = element_text(vjust=-.05),
+    axis.line = element_line(colour = "#666666", size = .2),
+    axis.text=(element_text(size=8)),
+    plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+    panel.border = element_rect(colour = "white"),
+    legend.position='none',
+    legend.title=element_blank(),
+    legend.key = element_rect(colour = "white"))
+  p
+
+```
+
+
+```{r echo = FALSE}
+
+# df = joined_df %>% group_by(monthly_corrected_streams30s) %>% summarise(playlists = n_distinct(playlist_uri))
+
+
+p <- ggplot(data = joined_df, aes(x = monthly_corrected_streams30s)) +
+# geom_bar(stat="identity") +
+  geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Playlists', expand = c(0,0)) +
+scale_x_discrete('Monthly Streams Over 30s') +
+ggtitle("Distribution of Monthly Streams Over 30s per Playlist") +
+scale_fill_manual(values=c("#6ae368")) +
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+p <- ggplot(data = joined_df, aes(x = genre_1, y = monthly_corrected_streams30s)) +
+# geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+  geom_boxplot()
+scale_y_continuous('Playlists', expand = c(0,0)) +
+scale_x_discrete('Monthly Streams Over 30s') +
+ggtitle("Distribution of Monthly Streams Over 30s per Playlist") +
+scale_fill_manual(values=c("#6ae368")) +
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+
+
+y = joined_df['monthly_corrected_streams30s']
+
+hist_df <- data.frame(
+  x = y,
+  y0 = min(y$monthly_corrected_streams30s),
+  y25 = quantile(y$monthly_corrected_streams30s, 0.25),
+  y50 = median(y$monthly_corrected_streams30s),
+  y75 = quantile(y$monthly_corrected_streams30s, 0.75),
+  y100 = max(y$monthly_corrected_streams30s)
+)
+
+ggplot(hist_df, aes(x$monthly_corrected_streams30s)) +
+  geom_boxplot(
+   aes(ymin = y0, lower = y25, middle = y50, upper = y75, ymax = y100),
+   stat = "identity"
+ )
+
+
+```
+
+
+```{r echo = FALSE}
+
+df = joined_df %>% 
+  # filter(mood_1 != '-') %>%
+  filter(first_word != 'other') %>%
+  group_by(first_word) %>% summarise(monthly_corrected_streams30s = mean(monthly_corrected_streams30s), playlists = n_distinct(playlist_uri), maus = sum(mau_x), streams_per_mau = sum(monthly_corrected_streams30s)/sum(mau_x))
+
+df$first_word = as.factor(df$first_word)
+
+p <- ggplot(data = df, aes(x = reorder(first_word, maus), y = maus, fill = first_word)) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('MAUs', expand = c(0,0)) +
+scale_x_discrete('First Word') +
+ggtitle("MAUs By First Word") +
+# scale_fill_manual(values=c("#6ae368")) +
+scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1530, label= "Average Playlist") +
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(first_word), playlists), y = playlists), fill = first_word) +
+# p <- ggplot(data = df %>% filter(first_word != 'other'), aes(x = reorder(as.factor(first_word), maus), y = maus), fill = first_word) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('Playlists', expand = c(0,0)) +
+scale_x_discrete('First Word') +
+ggtitle("Playlists by First Word") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(first_word), maus), y = maus), fill = first_word) +
+# p <- ggplot(data = df %>% filter(first_word != 'other'), aes(x = reorder(as.factor(first_word), maus), y = maus), fill = first_word) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('MAUs', expand = c(0,0)) +
+scale_x_discrete('First Word') +
+ggtitle("MAUs by First Word") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(first_word), streams_per_mau), y = streams_per_mau), fill = first_word) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('Monthly Streams per MAU', expand = c(0,0)) +
+scale_x_discrete('First Word') +
+ggtitle("Monthly Streams per MAU by First Word") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+```
+
+
+
+```{r echo = FALSE}
+
+df = joined_df %>% group_by(genre_1, mood_1) %>% summarise(playlists = n_distinct(playlist_uri))
+
+
+```
+
+
+
+
+```{r echo = FALSE}
+
+joined_df = joined_df %>% mutate(first_word = if_else(first_word %in% c('country', 'summer', 'new', 'chill', 'good', 'best', 'party', 'music', 'songs', 'fall', 'rap', 'playlist', 'edm', 'old', 'long', 'rock', 'workout', 'worship'), first_word, 'other' ))
+
+
+
+df = joined_df %>% filter(genre_1 != '-') %>% group_by(first_word) %>% summarise(monthly_corrected_streams30s = mean(monthly_corrected_streams30s), playlists = n_distinct(playlist_uri), maus = sum(mau_x), streams_per_mau = sum(monthly_corrected_streams30s)/sum(mau_x))
+
+
+df = joined_df %>% 
+  filter(mood_1 != '-') %>%
+  group_by(mood_1) %>% summarise(pct_previous_month_both_x = mean(pct_previous_month_both_x, na.rm = TRUE), playlists = n_distinct(playlist_uri), maus = sum(mau_x), streams_per_mau = sum(monthly_corrected_streams30s)/sum(mau_x))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(mood_1), pct_previous_month_both_x), y = pct_previous_month_both_x, fill = mood_1)) +
+geom_bar(stat="identity") +
+coord_flip() +
+# scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+scale_y_continuous('Monthly Repeat Rate', expand = c(0,0)) +
+scale_x_discrete('Mood') +
+ggtitle("Monthly Repeat Rate by Mood") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(mood_1), playlists), y = playlists), fill = mood_1) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('Playlists', expand = c(0,0)) +
+scale_x_discrete('Top Mood') +
+ggtitle("Playlists by Top Mood") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(mood_1), maus), y = maus), fill = mood_1) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('MAUs', expand = c(0,0)) +
+scale_x_discrete('Top Mood') +
+ggtitle("MAUs by Top Mood") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(mood_1), streams_per_mau), y = streams_per_mau), fill = mood_1) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+coord_flip() +
+scale_y_continuous('Monthly Streams per MAU', expand = c(0,0)) +
+scale_x_discrete('Top Mood') +
+ggtitle("Monthly Streams per MAU by Top Mood") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1390, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+# spotify owned playlists sound like this: View(joined_df %>% filter(owner != '552c5ee1c8df46c75b6d473d68370189') %>% group_by(first_word) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+```
+
+
+
+
+```{r echo = FALSE}
+
+
+df = joined_df %>% mutate(decile = ntile(n_artists,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), n_artists = mean(n_artists))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = monthly_corrected_streams30s), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+scale_x_discrete('Artist Count Decile') +
+ggtitle("Monthly Streams Over 30s by Artist Count") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+df = joined_df %>% mutate(decile = ntile(n_tracks,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), n_tracks = mean(n_tracks))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = n_artists), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Tracks', expand = c(0,0)) +
+scale_x_discrete('Track Count Decile') +
+ggtitle("Average Tracks in Each Decile") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+```
+
+
+```{r echo = FALSE}
+
+
+df = joined_df %>% mutate(decile = ntile(tracks_per_artist,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), tracks_per_artist = mean(tracks_per_artist))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = monthly_corrected_streams30s)) +
+geom_bar(stat="identity", fill='slategrey') +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+scale_x_discrete('Tracks Per Artist Decile') +
+ggtitle("Monthly Streams Over 30s by Tracks Per Artist") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+df = joined_df %>% mutate(decile = ntile(n_albums,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), n_albums = mean(n_tracks))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = n_albums), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Albums', expand = c(0,0)) +
+scale_x_discrete('Album Count Decile') +
+ggtitle("Average Albums in Each Decile") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+```
+
+```{r echo = FALSE}
+
+df = joined_df %>% filter(genre_1 %in% c('Blues', 'Jazz', 'Classical')) %>% group_by(first_word) %>% summarise(monthly_corrected_streams30s = mean(monthly_corrected_streams30s), playlists = n_distinct(playlist_uri), maus = sum(mau_x), streams_per_mau = sum(monthly_corrected_streams30s)/sum(mau_x))
+
+# df = joined_df %>% group_by(first_word) %>% summarise(pct_previous_month_both_x = mean(pct_previous_month_both_x, na.rm = TRUE), playlists = n_distinct(playlist_uri), maus = sum(mau_x), streams_per_mau = sum(monthly_corrected_streams30s)/sum(mau_x))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(first_word), monthly_corrected_streams30s), y = monthly_corrected_streams30s), fill = first_word) +
+geom_bar(stat="identity") +
+coord_flip() +
+scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+# scale_y_continuous('Monthly Repeat Rate', expand = c(0,0)) +
+scale_x_discrete('First Words') +
+ggtitle("Monthly Streams Over 30s by First Word") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+
+df = joined_df %>% filter(genre_1 %in% c('Blues', 'Jazz', 'Classical')) %>% mutate(decile = ntile(tracks_per_artist,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), tracks_per_artist = mean(tracks_per_artist))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = monthly_corrected_streams30s), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+scale_x_discrete('tracks_per_artist Decile') +
+ggtitle("Monthly Streams Over 30s by tracks_per_artist") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+```
+
+
+```{r echo = FALSE}
+
+
+df = joined_df %>% mutate(decile = ntile(tracks_per_artist,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), n_artists = mean(n_artists))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = monthly_corrected_streams30s), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Monthly Streams Over 30s', expand = c(0,0)) +
+scale_x_discrete('Tracks Per Artist Decile') +
+ggtitle("Monthly Streams Over 30s by Tracks Per Artist") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+
+
+df = joined_df %>% mutate(decile = ntile(tracks_per_artist,10)) %>% group_by(decile) %>% summarise(count = n(), monthly_corrected_streams30s = mean(monthly_corrected_streams30s), tracks_per_artist = mean(tracks_per_artist))
+
+p <- ggplot(data = df, aes(x = reorder(as.factor(decile), decile), y = tracks_per_artist), fill = decile) +
+geom_bar(stat="identity") +
+  # geom_histogram(binwidth=100, color = 'black', fill = 'black') + 
+# coord_flip() +
+scale_y_continuous('Tracks Per Artist', expand = c(0,0)) +
+scale_x_discrete('Tracks Per Artist Decile') +
+ggtitle("Average Tracks Per Artist in Each Decile") +
+# scale_fill_manual(values=c("#6ae368")) +
+# scale_fill_hue() +
+# geom_hline(yintercept = 1166, colour="black", linetype=2, alpha = 1.0) +
+# annotate("text", x=8.5, y=1490, label= "Average Playlist") + 
+theme_bw() +
+theme(
+  #        axis.title.y = element_text(size = rel(0)),
+  axis.title.x = element_text(vjust=-.05),
+  axis.line = element_line(colour = "#666666", size = .2),
+  axis.text=(element_text(size=8)),
+  plot.title=element_text(size=12, vjust=2, hjust=0, face="bold"),
+  panel.border = element_rect(colour = "white"),
+  legend.position='none',
+  legend.title=element_blank(),
+  legend.key = element_rect(colour = "white"))
+p
+
+```
+
+```{r echo = FALSE}
+
+df = joined_df %>% group_by(spotify_owned) %>% summarise(count = n_distinct(playlist_uri), 
+                                                         monthly_corrected_streams30s = mean(monthly_corrected_streams30s),
+                                                         median_monthly_corrected_streams30s = median(monthly_corrected_streams30s),
+                                                         quarter_monthly_corrected_streams30s = quantile(monthly_corrected_streams30s, 0.25),
+                                                         three_quarter_monthly_corrected_streams30s = quantile(monthly_corrected_streams30s, 0.75),
+                                                         min_monthly_corrected_streams30s = min(monthly_corrected_streams30s),
+                                                         max_monthly_corrected_streams30s = max(monthly_corrected_streams30s))
+
+y = joined_df %>% filter(spotify_owned == "no") %>% select(monthly_corrected_streams30s)
+
+hist_df <- data.frame(
+  # x = y,
+  y0 = min(y$monthly_corrected_streams30s),
+  y25 = quantile(y$monthly_corrected_streams30s, 0.25),
+  y50 = median(y$monthly_corrected_streams30s),
+  y75 = quantile(y$monthly_corrected_streams30s, 0.75),
+  y100 = max(y$monthly_corrected_streams30s)
+)
+
+
+```
+
+
+```{r echo = FALSE}
+
+joined_df = joined_df %>% mutate(track_change_pct = n_local_tracks / n_tracks)
+joined_df = joined_df %>% mutate(track_changed = if_else(abs(n_local_tracks) > 0, "yes", "no"))
+
+
+y = joined_df %>% filter(track_changed == "yes") %>% select(monthly_corrected_streams30s)
+
+hist_df <- data.frame(
+  # x = y,
+  y0 = min(y$monthly_corrected_streams30s),
+  y25 = quantile(y$monthly_corrected_streams30s, 0.25),
+  y50 = median(y$monthly_corrected_streams30s),
+  y75 = quantile(y$monthly_corrected_streams30s, 0.75),
+  y100 = max(y$monthly_corrected_streams30s)
+)
+
+
+```
+
+```{r echo = FALSE}
+
+joined_df = joined_df %>% mutate(multiple_playlists = if_else(playlists > 1, "yes", "no"))
+
+
+y = joined_df %>% filter(multiple_playlists == "no") %>% select(monthly_corrected_streams30s)
+
+hist_df <- data.frame(
+  # x = y,
+  y0 = min(y$monthly_corrected_streams30s),
+  y25 = quantile(y$monthly_corrected_streams30s, 0.25),
+  y50 = median(y$monthly_corrected_streams30s),
+  y75 = quantile(y$monthly_corrected_streams30s, 0.75),
+  y100 = max(y$monthly_corrected_streams30s)
+)
+
+
+joined_df = joined_df %>% mutate(multiple_playlists = if_else(playlists > 1, "yes", "no"))
+
+
+y = joined_df %>% filter(multiple_playlists == "yes" & owner == '552c5ee1c8df46c75b6d473d68370189') %>% select(monthly_corrected_streams30s)
+
+hist_df <- data.frame(
+  # x = y,
+  y0 = min(y$monthly_corrected_streams30s),
+  y25 = quantile(y$monthly_corrected_streams30s, 0.25),
+  y50 = median(y$monthly_corrected_streams30s),
+  y75 = quantile(y$monthly_corrected_streams30s, 0.75),
+  y100 = max(y$monthly_corrected_streams30s)
+)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r echo = FALSE}
+
+
+model1 = lm(log(monthly_corrected_streams30s+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'no'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+
+
+  
+  
+  
+model1 = lm(log(mau_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'no'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+  
+  
+  
+model1 = lm(log(pct_previous_month_both_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'no'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+  
+  
+model1 = lm(log(pct_streams_for_30_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'no'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)  
+  
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+model1 = lm(log(monthly_corrected_streams30s+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      # multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'yes'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+
+
+  
+  
+  
+model1 = lm(log(mau_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      # multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'yes'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+  
+  
+  
+model1 = lm(log(pct_previous_month_both_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      # multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'yes'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+  
+  
+model1 = lm(log(pct_streams_for_30_x+1) ~ log(n_tracks+1) +
+                                                      log(tracks_per_artist) + 
+                                                      log(albums_per_artist) +
+                                                      genre_1 + 
+                                                      mood_1 + 
+                                                      first_word + 
+                                                      # multiple_playlists + 
+                                                      track_changed,
+                data = joined_df %>% filter(spotify_owned == 'yes'))
+
+summary(model1)
+
+model_df =  tidy(conf.int = TRUE, model1)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)  
+  
+  
+  
+
+  
+  
+  
+  
+  
+  
+ 
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+```
+
+```{r echo = FALSE}
+
+
+model2 = lm(log(monthly_corrected_streams30s+1) ~ log(n_tracks+1) +
+                                                      log(n_artists+1) + 
+                                                      log(n_albums+1) +
+                                                      # log(users_x+1) +
+                                                      as.factor(genre_1) + 
+                                                      as.factor(mood_1) + 
+                                                      # first_token                                                      
+                                                      track_changed,
+                                                      # spotify_owned, 
+                data = joined_df %>% filter(spotify_owned == "yes"))
+
+summary(model2)
+
+model_df =  tidy(conf.int = TRUE, model2)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+
+```
+
+```{r echo = FALSE}
+
+
+model3 = lm(log(monthly_corrected_streams30s+1) ~ log(n_tracks+1) +
+                                                      # log(n_artists+1) + 
+                                                      # log(n_albums+1) +
+                                                      # log(users_x+1) +
+                                                      as.factor(genre_1) + 
+                                                      # as.factor(mood_1) + 
+                                                      # first_token                                                      
+                                                      track_changed,
+                                                      # spotify_owned, 
+                data = joined_df %>% filter(spotify_owned == "yes"))
+
+summary(model3)
+
+model_df =  tidy(conf.int = TRUE, model3)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  # filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+
+  
+library(car)
+car::vif(model3)  
+  
+```
+
+
+
+```{r echo = FALSE}
+
+
+model4 = lm(log(monthly_corrected_streams30s+1) ~ log(n_tracks+1) +
+                                                      log(playlists+1) +
+                                                      # log(n_albums+1) +
+                                                      # log(users_x+1) +
+                                                      as.factor(genre_1) + 
+                                                      as.factor(mood_1) +
+                                                      # first_token                                                      
+                                                      track_changed,
+                                                      # spotify_owned, 
+                data = joined_df %>% filter(spotify_owned == "no"))
+
+summary(model4)
+
+model_df =  tidy(conf.int = TRUE, model4)
+plot = model_df %>%
+  filter(term != '(Intercept)') %>%
+  filter(grepl("log",term) | grepl("yes",term)) %>%
+  ggplot(aes(x=estimate, y=reorder(term,estimate), color = estimate)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_colour_gradientn(colours=rev(rainbow(8))) +
+  # xlim(c(-.1,.1)) +
+  geom_vline(xintercept = 0, colour="grey", size = 0.25, linetype = "longdash") +
+  ylab("") +
+  xlab("% Increase Associated with a 1% in Metric") +
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "#666666", size = .2),
+    plot.title=element_text(face="bold"),
+    legend.position="none",
+    legend.title=element_blank(),
+    axis.text=(element_text(size=12)),
+    legend.key = element_rect(colour = "white"))
+  plot(plot)
+
+  
+
+# car::vif(model3)  
+  
+```
+
+
+
+```{r echo = FALSE}
+
+# top 2 outlier playlists
+# spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:a39746f620483e44552dd72cb67fc740
+# spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:2b64360f221867fd22e21d8b9375472b
+
+joined_df = joined_df %>% mutate(top_two_playlist = ifelse(playlist_uri == 'spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:a39746f620483e44552dd72cb67fc740' |
+                                           playlist_uri == 'spotify:user:552c5ee1c8df46c75b6d473d68370189:playlist:2b64360f221867fd22e21d8b9375472b',
+                                           "yes", 
+                                           "no"))
+
+# View(joined_df %>% select(playlist_uri, owner, streams_x, top_two_playlist) %>% arrange(desc(streams_x)))
+
+```
+
+
+
+```{r echo = FALSE}
+
+
+
+View(joined_df %>% group_by(first_word) %>% summarise(playlists = n_distinct(playlist_uri)) %>% arrange(desc(playlists)))
+
+
+```
